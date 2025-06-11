@@ -1,0 +1,937 @@
+  import React, { useState, useEffect, useRef } from 'react';
+  import { CopyToClipboard } from 'react-copy-to-clipboard';
+  import { SlDocs, SlNote, SlRefresh, SlLike, SlPaperPlane } from "react-icons/sl";
+  import { FaShareSquare, FaLock, FaUnlockAlt, FaAngleLeft, FaAngleRight, FaAngleUp } from 'react-icons/fa';
+  import { disableScroll, enableScroll } from '../utils/utils';
+  import { handleShareOnDevice } from '../utils/shareUtils';
+  import { useCalculator } from '../context/CalculatorContext';
+  import { useDropdownTouch } from '../hooks/useDropdownTouch';
+  import { colors, spacing, commonStyles, layout } from '../styles/globalStyles';
+  import CalculatorButtons from './CalculatorButtons';
+
+  const defaultAspectRatios = ["2.39:1", "2:1", "1.85:1", "1.66:1", "16:9", "4:3", 
+    "21:9", "16:10", "3:2","6:5", "1:1", "4:5", "9:16", "Custom"];
+
+  function AspectRatioCalculator({ addLog }) {
+    const { aspectCalcState, setAspectCalcState } = useCalculator();
+
+    const [isMobile, setIsMobile] = useState(false);
+    const [selectedRatio, setSelectedRatio] = useState(aspectCalcState.selectedRatio);
+    const [customRatio, setCustomRatio] = useState(aspectCalcState.customRatio);
+    const [width, setWidth] = useState(aspectCalcState.width);
+    const [height, setHeight] = useState(aspectCalcState.height);
+    const [lockedField, setPinnedField] = useState(aspectCalcState.lockedField);
+    const [logButtonText, setLogButtonText] = useState(<SlNote />);
+    const [copyButtonText, setCopyButtonText] = useState(<SlDocs />);
+    const [shareButtonText, setShareButtonText] = useState(<SlPaperPlane />);
+    const [resetButtonText, setResetButtonText] = useState(<SlRefresh />);
+    const [customRatios, setCustomRatios] = useState(aspectCalcState.customRatios);
+    const [calculationMode, setCalculationMode] = useState(aspectCalcState.calculationMode);
+    const [resolution, setResolution] = useState("1920 x 1080");
+    const [isWidthLocked, setIsWidthLocked] = useState(aspectCalcState.isWidthLocked);
+    const [isHeightLocked, setIsHeightLocked] = useState(aspectCalcState.isHeightLocked);
+    const [sensitivity] = useState(0.025);
+    const [scrollTimeout, setScrollTimeout] = useState(null);
+
+    const ratioRef = useRef(null);
+    const widthRef = useRef(null);
+    const heightRef = useRef(null);
+    const resolutionRef = useRef(null);
+
+    // Add state for tracking focus
+    const [focusedField, setFocusedField] = useState(null);
+
+    useEffect(() => {
+      const params = new URLSearchParams(window.location.search);
+      const ratio = params.get('ratio');
+      const widthParam = params.get('width');
+      const heightParam = params.get('height');
+
+      if (ratio && widthParam && heightParam) {
+        setSelectedRatio(ratio);
+        setWidth(parseInt(widthParam, 10));
+        setHeight(parseInt(heightParam, 10));
+      }
+    }, []);
+
+    useEffect(() => {
+      setAspectCalcState({
+        selectedRatio,
+        width,
+        height,
+        lockedField,
+        customRatio,
+        customRatios,
+        calculationMode,
+        isWidthLocked,
+        isHeightLocked
+      });
+    }, [
+      selectedRatio,
+      width,
+      height,
+      lockedField,
+      customRatio,
+      customRatios,
+      calculationMode,
+      isWidthLocked,
+      isHeightLocked,
+      setAspectCalcState
+    ]);
+
+    const roundToEven = (num) => {
+      const rounded = Math.round(num);
+      return rounded % 2 === 0 ? rounded : rounded + 1;
+    };
+
+    const parseRatio = (input) => {
+      console.log('Parsing ratio input:', input);
+
+      // Remove all whitespace and convert to lowercase
+      input = input.toLowerCase().replace(/\s+/g, '');
+      console.log('Cleaned input:', input);
+
+      // Check for decimal format first (e.g., 2.35 or 1.77)
+      const decimalMatch = input.match(/^(\d+(?:\.\d+)?)$/);
+      if (decimalMatch) {
+        const result = parseFloat(input);
+        console.log(`Decimal format detected: ${input}, treating as ${input}:1`);
+        return result;
+      }
+
+      // Check for ratio format (e.g., 16:9, 16x9, 2.35:1)
+      const ratioMatch = input.match(/^(\d+(?:\.\d+)?)[:x](\d+(?:\.\d+)?)$/);
+      if (ratioMatch) {
+        const [w, h] = ratioMatch.slice(1).map(Number);
+        const result = w / h;
+        console.log(`Ratio format detected: ${w}:${h}, Result:`, result);
+        return result;
+      }
+
+      // Check for two numbers separated by space (e.g., 16 9, 2.35 1)
+      const spaceMatch = input.match(/^(\d+(?:\.\d+)?)\s*(\d+(?:\.\d+)?)$/);
+      if (spaceMatch) {
+        const [w, h] = spaceMatch.slice(1).map(Number);
+        const result = w / h;
+        console.log(`Space-separated format detected: ${w} ${h}, Result:`, result);
+        return result;
+      }
+
+      // If none of the above formats match, return NaN
+      console.log('No valid format detected, returning NaN');
+      return NaN;
+    };
+
+    const compareRatios = (a, b) => {
+      const ratioA = parseRatio(a);
+      const ratioB = parseRatio(b);
+      return ratioA - ratioB;
+    };
+
+    const formatRatioDisplay = (ratio) => {
+      return ratio;
+    };
+
+    const formatRatio = (ratio) => {
+      // Check if the input ratio matches any of the original custom ratios
+      const matchingCustomRatio = customRatios.find(r => {
+        const parsed = parseRatio(r);
+        return Math.abs(parsed - ratio) < 0.0001;
+      });
+
+      if (matchingCustomRatio) {
+        return matchingCustomRatio;
+      }
+
+      // For decimal inputs like 2.35, preserve as "2.35:1"
+      if (Number.isFinite(ratio) && !Number.isInteger(ratio)) {
+        return `${ratio.toFixed(3)}:1`;
+      }
+
+      // For integer ratios, use the GCD reduction
+      const tolerance = 0.0001;
+      for (let denominator = 1; denominator <= 16; denominator++) {
+        const numerator = ratio * denominator;
+        if (Math.abs(numerator - Math.round(numerator)) < tolerance) {
+          let n = Math.round(numerator);
+          let d = denominator;
+          const gcd = getGCD(n, d);
+          n = n / gcd;
+          d = d / gcd;
+          return `${n}:${d}`;
+        }
+      }
+
+      return `${ratio.toFixed(3)}:1`;
+    };
+
+    const getGCD = (a, b) => {
+      a = Math.abs(a);
+      b = Math.abs(b);
+      while (b) {
+        const temp = b;
+        b = a % b;
+        a = temp;
+      }
+      return a;
+    };
+
+    const handleRatioChange = (e) => {
+      const value = e.target.value;
+      setSelectedRatio(value);
+
+      if (value === "Custom") {
+        setCustomRatio("");
+        return;
+      }
+
+      setCustomRatio(value);
+      
+      const aspectRatio = parseRatio(value);
+      if (!isNaN(aspectRatio)) {
+        switch (calculationMode) {
+          case 'width':
+            // Width is locked, update height
+            setHeight(roundToEven(width / aspectRatio));
+            break;
+          case 'height':
+            // Height is locked, update width
+            setWidth(roundToEven(height * aspectRatio));
+            break;
+          case 'ratio':
+            // Ratio is locked, don't update anything
+            break;
+          default:
+            // Nothing is locked, maintain width and update height
+            setHeight(roundToEven(width / aspectRatio));
+            break;
+        }
+      }
+    };
+
+    const handleCustomRatioChange = (e) => {
+      const value = e.target.value;
+      console.log('Custom ratio input:', value);
+      // Allow digits, decimal point, colon, 'x', and space
+      // Replace any sequence of spaces with a single space
+      if (/^[\d.:x\s]*$/.test(value)) {
+        const cleanedValue = value.replace(/\s+/g, ' ');
+        // If there's a space, automatically convert it to a colon
+        const formattedValue = cleanedValue.replace(/\s/g, ':');
+        setCustomRatio(formattedValue);
+        console.log('Valid input, setting custom ratio:', formattedValue);
+      } else {
+        console.log('Invalid input, ignoring');
+      }
+    };
+
+    const handleCustomRatioKeyPress = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        processCustomRatio();
+        e.target.blur();
+      }
+    };
+
+    const handleCustomRatioBlur = () => {
+      processCustomRatio();
+    };
+
+    // Helper function to handle all custom ratio processing
+    const processCustomRatio = () => {
+      console.log('Processing custom ratio, current value:', customRatio);
+      if (customRatio) {
+        const parsedRatio = parseRatio(customRatio);
+        console.log('Parsed ratio:', parsedRatio);
+        if (!isNaN(parsedRatio)) {
+          const formattedRatio = formatRatio(parsedRatio);
+          console.log('Formatted ratio:', formattedRatio);
+          // Only add to custom ratios if it came from Custom input
+          if (
+            selectedRatio === 'Custom' &&
+            !defaultAspectRatios.includes(formattedRatio) &&
+            !customRatios.includes(formattedRatio)
+          ) {
+            setCustomRatios((prevRatios) => {
+              const newRatios = [...prevRatios, formattedRatio];
+              return newRatios.sort(compareRatios);
+            });
+          }
+          setSelectedRatio(formattedRatio);
+          recalculateDimensions('ratio');
+        } else {
+          console.log('Invalid ratio, not updating');
+        }
+      }
+      setCustomRatio("");
+    };
+
+    const handleWidthChange = (e) => {
+      if (calculationMode === 'width') return;
+      
+      const value = e.target.value === '' ? '' : parseInt(e.target.value, 10) || 0;
+      
+      if (calculationMode === 'height') {
+        // When height is locked, allow empty field until blur
+        setWidth(value);
+        if (value > 0) {
+          const newRatio = value / height;
+          const formattedRatio = formatRatio(newRatio);
+          
+          // Add to custom ratios if it's a new ratio
+          if (!defaultAspectRatios.includes(formattedRatio) && 
+              !customRatios.includes(formattedRatio)) {
+            setCustomRatios(prevRatios => {
+              const newRatios = [...prevRatios, formattedRatio];
+              return newRatios.sort(compareRatios);
+            });
+          }
+          
+          setSelectedRatio(formattedRatio);
+        }
+      } else {
+        setWidth(value);
+        calculateDimensions('width');
+      }
+    };
+
+    const handleHeightChange = (e) => {
+      if (calculationMode === 'height') return;
+      
+      const value = e.target.value === '' ? '' : parseInt(e.target.value, 10) || 0;
+      
+      if (calculationMode === 'width') {
+        // When width is locked, allow empty field until blur
+        setHeight(value);
+        if (value > 0) {
+          const newRatio = width / value;
+          const formattedRatio = formatRatio(newRatio);
+          
+          // Add to custom ratios if it's a new ratio
+          if (!defaultAspectRatios.includes(formattedRatio) && 
+              !customRatios.includes(formattedRatio)) {
+            setCustomRatios(prevRatios => {
+              const newRatios = [...prevRatios, formattedRatio];
+              return newRatios.sort(compareRatios);
+            });
+          }
+          
+          setSelectedRatio(formattedRatio);
+        }
+      } else {
+        setHeight(value);
+        calculateDimensions('height');
+      }
+    };
+
+    const handleWidthBlur = () => {
+      const newWidth = parseInt(width, 10) || 0;
+      const roundedWidth = roundToEven(newWidth);
+      
+      if (calculationMode === 'height') {
+        if (roundedWidth > 0) {
+          const newRatio = roundedWidth / height;
+          const formattedRatio = formatRatio(newRatio);
+          setSelectedRatio(formattedRatio);
+          setWidth(roundedWidth);
+        } else {
+          // Restore previous width if empty or invalid
+          setWidth(roundToEven(height * parseRatio(selectedRatio)));
+        }
+      } else if (calculationMode !== 'width') {
+        setWidth(roundedWidth);
+        calculateDimensions('width');
+      }
+    };
+
+    const handleHeightBlur = () => {
+      const newHeight = parseInt(height, 10) || 0;
+      const roundedHeight = roundToEven(newHeight);
+      
+      if (calculationMode === 'width') {
+        if (roundedHeight > 0) {
+          const newRatio = width / roundedHeight;
+          const formattedRatio = formatRatio(newRatio);
+          setSelectedRatio(formattedRatio);
+          setHeight(roundedHeight);
+        } else {
+          // Restore previous height if empty or invalid
+          setHeight(roundToEven(width / parseRatio(selectedRatio)));
+        }
+      } else if (calculationMode !== 'height') {
+        setHeight(roundedHeight);
+        calculateDimensions('height');
+      }
+    };
+
+    const handleHeightKeyPress = (e) => {
+      if (e.key === 'Enter') {
+        const newHeight = roundToEven(parseInt(height, 10) || 0);
+        setHeight(newHeight);
+
+        if (lockedField === 'width') {
+          const newRatio = width / newHeight;
+          const formattedRatio = formatRatio(newRatio);
+          setSelectedRatio(formattedRatio);
+        } else if (!lockedField || lockedField === 'ratio') {
+          const aspectRatio = parseRatio(selectedRatio);
+          const newWidth = roundToEven(newHeight * aspectRatio);
+          setWidth(newWidth);
+        }
+
+        e.target.blur();
+      }
+    };
+
+    const handleWidthKeyPress = (e) => {
+      if (e.key === 'Enter') {
+        const newWidth = roundToEven(parseInt(width, 10) || 0);
+        setWidth(newWidth);
+        e.target.blur();
+      }
+    };
+
+    // Define handleRatioBlur function
+    const handleRatioBlur = () => {
+      const aspectRatio = parseRatio(selectedRatio);
+      recalculateDimensions('ratio');
+    };
+
+    // Define handleKeyPress function
+    const handleKeyPress = (e) => {
+      if (e.key === 'Enter') {
+        const fieldName = e.target.name;
+        if (fieldName === 'width') {
+          handleWidthBlur();
+        } else if (fieldName === 'height') {
+          handleHeightBlur();
+        } else if (fieldName === 'ratio') {
+          handleRatioBlur();
+        }
+      }
+    };
+
+    // Update handleWidthWheel function
+    const handleWidthWheel = (e) => {
+      e.preventDefault();
+      if (calculationMode === 'width' || calculationMode === 'height') return; // Only block when width/height locked
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const isLeftHalf = x < rect.width / 2;
+      const scrollAmount = -e.deltaY;
+      const baseChange = isLeftHalf ? 20 : 2;
+      const changeAmount = Math.abs(scrollAmount) > 50 
+        ? baseChange * Math.abs(scrollAmount / 50) 
+        : baseChange;
+      const delta = Math.sign(scrollAmount);
+
+      const evenChangeAmount = Math.round(changeAmount / 2) * 2;
+      const newWidth = Math.max(2, width + delta * evenChangeAmount);
+      setWidth(newWidth);
+      
+      calculateDimensions('width');
+    };
+
+    // Update handleHeightWheel function
+    const handleHeightWheel = (e) => {
+      e.preventDefault();
+      if (calculationMode === 'width' || calculationMode === 'height') return; // Only block when width/height locked
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const isLeftHalf = x < rect.width / 2;
+      const scrollAmount = -e.deltaY;
+      const baseChange = isLeftHalf ? 20 : 2;
+      const changeAmount = Math.abs(scrollAmount) > 50 
+        ? baseChange * Math.abs(scrollAmount / 50) 
+        : baseChange;
+      const delta = Math.sign(scrollAmount);
+
+      const evenChangeAmount = Math.round(changeAmount / 2) * 2;
+      const newHeight = Math.max(2, height + delta * evenChangeAmount);
+      setHeight(newHeight);
+      
+      calculateDimensions('height');
+    };
+
+    // Refine calculateDimensions function
+    const calculateDimensions = (changedField) => {
+      const aspectRatio = parseRatio(selectedRatio);
+      if (isNaN(aspectRatio)) return;
+
+      switch (calculationMode) {
+        case 'width':
+          // Width is locked - only ratio changes can update height
+          if (changedField === 'ratio') {
+            setHeight(roundToEven(width / aspectRatio));
+          }
+          break;
+
+        case 'height':
+          // Height is locked - only ratio changes can update width
+          if (changedField === 'ratio') {
+            setWidth(roundToEven(height * aspectRatio));
+          }
+          break;
+
+        case 'ratio':
+          // Ratio is locked - maintain ratio while updating dimensions
+          if (changedField === 'width') {
+            setHeight(roundToEven(width / aspectRatio));
+          } else if (changedField === 'height') {
+            setWidth(roundToEven(height * aspectRatio));
+          }
+          break;
+
+        default:
+          // Nothing is locked - update based on changed field
+          if (changedField === 'width') {
+            setHeight(roundToEven(width / aspectRatio));
+          } else if (changedField === 'height') {
+            setWidth(roundToEven(height * aspectRatio));
+          } else if (changedField === 'ratio') {
+            setHeight(roundToEven(width / aspectRatio));
+          }
+          break;
+      }
+    };
+
+    // Helper function to calculate aspect ratio without causing loops
+    const recalculateDimensions = (field, context = 'manual') => {
+      const aspectRatio = parseRatio(selectedRatio);
+      if (isNaN(aspectRatio)) return;
+
+      switch (calculationMode) {
+        case 'width':
+          setHeight(roundToEven(width / aspectRatio));
+          break;
+        case 'height':
+          setWidth(roundToEven(height * aspectRatio));
+          break;
+        case 'ratio':
+          if (field === 'width') {
+            setHeight(roundToEven(width / aspectRatio));
+          } else if (field === 'height') {
+            setWidth(roundToEven(height * aspectRatio));
+          }
+          break;
+        default:
+          setHeight(roundToEven(width / aspectRatio));
+          break;
+      }
+    };
+
+    const handleLog = () => {
+      const logEntry = `Aspect Ratio: ${selectedRatio} = ${width}x${height}`;
+      addLog(logEntry);
+      setLogButtonText(<SlLike />);
+      setTimeout(() => setLogButtonText(<SlNote />), 500);
+    };
+
+    const handleCopy = () => {
+      setCopyButtonText(<SlLike />);
+      setTimeout(() => setCopyButtonText(<SlDocs />), 500);
+    };
+
+    const handleShare = async () => {
+      const shareUrl = new URL(window.location.href);
+      shareUrl.searchParams.set('ratio', selectedRatio);
+      shareUrl.searchParams.set('width', width.toString());
+      shareUrl.searchParams.set('height', height.toString());
+      if (calculationMode) {
+        shareUrl.searchParams.set('mode', calculationMode);
+      }
+
+      const shareButtonText = `${selectedRatio} - ${width}x${height}`;
+      
+      try {
+        const result = await handleShareOnDevice(
+          'TBD Post DataCalc',
+          `Check out this aspect ratio: ${shareButtonText}`,
+          shareUrl.toString()
+        );
+
+        if (result?.success) {
+          setShareButtonText(<SlLike />);
+          setTimeout(() => setShareButtonText(<SlPaperPlane />), 500);
+        }
+        return result;
+      } catch (error) {
+        console.error('Share failed:', error);
+        return { success: false, method: 'none' };
+      }
+    };
+
+    const handleReset = () => {
+      setSelectedRatio("16:9");
+      setCustomRatio("");
+      setWidth(1920);
+      setHeight(1080);
+      setPinnedField(null);
+      setIsWidthLocked(false);
+      setIsHeightLocked(false);
+      setCalculationMode(null); // Reset the calculation mode
+      setResetButtonText(<SlLike />);
+      setTimeout(() => setResetButtonText(<SlRefresh />), 500);
+    };
+
+    useEffect(() => {
+      const checkMobile = () => {
+        setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+      };
+      checkMobile();
+      window.addEventListener('resize', checkMobile);
+
+      return () => window.removeEventListener('resize', checkMobile);
+    }, []);
+
+    useEffect(() => {
+      if (isMobile) {
+        disableScroll();
+        return () => enableScroll();
+      }
+    }, [isMobile]);
+
+    const currentSpacing = isMobile ? spacing.mobile : spacing.desktop;
+
+    const commonInputClass = commonStyles.commonInputClass;
+    const textCenterImportant = commonStyles.textCenterImportant;
+
+    const getLiveRatio = () => {
+      if (width && height) {
+        const currentRatio = width / height;
+        return formatRatio(currentRatio);
+      }
+      return selectedRatio;
+    };
+
+    useEffect(() => {
+      return () => {
+        if (scrollTimeout) {
+          clearTimeout(scrollTimeout);
+        }
+      };
+    }, [scrollTimeout]);
+
+    // Update the handleRatioWheel function
+    const handleRatioWheel = (e) => {
+      e.preventDefault();
+      if (calculationMode === 'ratio') return;
+      
+      const scrollAmount = e.deltaY;
+      const scrollableRatios = [...defaultAspectRatios.filter(r => r !== "Custom"), ...customRatios];
+      const currentIndex = scrollableRatios.indexOf(selectedRatio);
+      
+      if (scrollAmount > 0) {
+        // Scroll down, increase index
+        const nextIndex = currentIndex < scrollableRatios.length - 1 ? currentIndex + 1 : currentIndex;
+        handleRatioChange({ target: { value: scrollableRatios[nextIndex] } });
+      } else {
+        // Scroll up, decrease index
+        const prevIndex = currentIndex > 0 ? currentIndex - 1 : currentIndex;
+        handleRatioChange({ target: { value: scrollableRatios[prevIndex] } });
+      }
+    };
+
+    // Update the handleRatioTouch function to handle scrolling
+    const handleRatioTouch = (e) => {
+      const touch = e.touches[0];
+      const rect = e.currentTarget.getBoundingClientRect();
+      
+      // Store the initial touch position
+      e.currentTarget.dataset.touchStartY = touch.clientY;
+      e.currentTarget.dataset.lastTouchY = touch.clientY;
+    };
+
+    const handleRatioTouchMove = (e) => {
+      e.preventDefault();
+      if (lockedField === 'ratio') return;
+
+      const touch = e.touches[0];
+      const lastY = parseFloat(e.currentTarget.dataset.lastTouchY);
+      const deltaY = lastY - touch.clientY;
+      
+      const scrollableRatios = [...defaultAspectRatios.filter(r => r !== "Custom"), ...customRatios];
+      const currentIndex = scrollableRatios.indexOf(selectedRatio);
+      
+      // Only change ratio if we've moved more than 10 pixels
+      if (Math.abs(deltaY) > 10) {
+        if (deltaY > 0) {
+          // Scroll down, increase index
+          const nextIndex = currentIndex < scrollableRatios.length - 1 ? currentIndex + 1 : currentIndex;
+          if (nextIndex !== currentIndex) {
+            handleRatioChange({ target: { value: scrollableRatios[nextIndex] } });
+          }
+        } else {
+          // Scroll up, decrease index
+          const prevIndex = currentIndex > 0 ? currentIndex - 1 : currentIndex;
+          if (prevIndex !== currentIndex) {
+            handleRatioChange({ target: { value: scrollableRatios[prevIndex] } });
+          }
+        }
+        // Update the last touch position after making a change
+        e.currentTarget.dataset.lastTouchY = touch.clientY;
+      }
+    };
+    const handleBlur = () => {
+      if (selectedRatio === 'Custom') {
+        processCustomRatio();
+      } else {
+        recalculateDimensions('ratio');
+      }
+    };
+    // Update the select element to use these new handlers
+    <select
+      ref={ratioRef}
+      name="ratio"
+      value={selectedRatio}
+      onChange={handleRatioChange}
+      onBlur={handleBlur}
+      onKeyPress={handleKeyPress}
+      onTouchStart={handleRatioTouch}
+      onTouchMove={handleRatioTouchMove}
+      className={`${commonStyles.getInputStyle('ratio', calculationMode)} ${selectedRatio === 'Custom' ? 'hidden':''} text-left`}
+      onWheel={handleRatioWheel}
+    >
+      {[...defaultAspectRatios.filter(r => r !== "Custom"), ...customRatios]
+        .sort(compareRatios)
+        .map((ratio) => (
+          <option key={ratio} value={ratio}>{formatRatioDisplay(ratio)}</option>
+        ))}
+      <option value="Custom">Custom</option>
+    </select>
+
+    // Add this function near other handlers
+
+
+    // Add touch handlers for mobile scrolling
+    const handleTouchStart = (e, field) => {
+      const touch = e.touches[0];
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const isLeftHalf = x < rect.width / 2;
+      
+      // Store the initial touch position and whether it's on the left half
+      e.currentTarget.dataset.touchStartY = touch.clientY;
+      e.currentTarget.dataset.isLeftHalf = isLeftHalf;
+      e.currentTarget.dataset.lastTouchY = touch.clientY;
+    };
+
+    const handleTouchMove = (e, field) => {
+      e.preventDefault();
+      if (lockedField === field) return;
+
+      const touch = e.touches[0];
+      const startY = parseFloat(e.currentTarget.dataset.touchStartY);
+      const lastY = parseFloat(e.currentTarget.dataset.lastTouchY);
+      const isLeftHalf = e.currentTarget.dataset.isLeftHalf === 'true';
+      
+      const deltaY = lastY - touch.clientY;
+      const baseChange = isLeftHalf ? 20 : 2;
+      const changeAmount = Math.abs(deltaY) > 10 
+        ? baseChange * Math.abs(deltaY / 10) 
+        : baseChange;
+      const delta = Math.sign(deltaY);
+
+      const evenChangeAmount = Math.round(changeAmount / 2) * 2;
+
+      if (field === 'width') {
+        const newWidth = Math.max(2, width + delta * evenChangeAmount);
+        setWidth(newWidth);
+        calculateDimensions('width');
+      } else if (field === 'height') {
+        const newHeight = Math.max(2, height + delta * evenChangeAmount);
+        setHeight(newHeight);
+        calculateDimensions('height');
+      }
+
+      e.currentTarget.dataset.lastTouchY = touch.clientY;
+    };
+
+    // Update the placeholder helper functions
+    const getHeightPlaceholder = () => {
+      if (calculationMode === 'width' && focusedField === 'height') {
+        return 'Enter height to set ratio';
+      }
+      return '';
+    };
+
+    const getWidthPlaceholder = () => {
+      if (calculationMode === 'height' && focusedField === 'width') {
+        return 'Enter width to set ratio';
+      }
+      return '';
+    };
+
+    return (
+      <div className={`aspect-ratio-calculator ${currentSpacing.padding} ${colors.bgColor} ${colors.textColor}`}>
+        {/* Aspect Ratio row */}
+        <div className={currentSpacing.fieldGap}>
+          <label className={`${commonStyles.labelClass} md:text-base`}>Aspect Ratio</label>
+          <div className="flex-1">
+            <select
+              ref={ratioRef}
+              name="ratio"
+              value={selectedRatio}
+              onChange={handleRatioChange}
+              onBlur={handleBlur}
+              onKeyPress={handleKeyPress}
+              onTouchStart={handleRatioTouch}
+              onTouchMove={handleRatioTouchMove}
+              className={`${commonStyles.getInputStyle('ratio', calculationMode)} ${selectedRatio === 'Custom' ? 'hidden':''} text-left`}
+              onWheel={handleRatioWheel}
+            >
+              {[...defaultAspectRatios.filter(r => r !== "Custom"), ...customRatios]
+                .sort(compareRatios)
+                .map((ratio) => (
+                  <option key={ratio} value={ratio}>{formatRatioDisplay(ratio)}</option>
+                ))}
+              <option value="Custom">Custom</option>
+            </select>
+            <input
+              type="text"
+              name="ratio"
+              value={customRatio}
+              onChange={handleCustomRatioChange}
+              onBlur={handleCustomRatioBlur}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault();
+                  processCustomRatio();
+                  e.target.blur();
+                  if (e.key === 'Tab') {
+                    widthRef.current?.focus();
+                  }
+                }
+              }}
+              placeholder="Enter ratio (e.g., 16:9)"
+              className={`${commonInputClass} ${selectedRatio !== 'Custom' ? 'hidden':''}`}
+            />
+          </div>
+        </div>
+
+        {/* Width, Lock, and Height row */}
+        <div className={`grid ${layout.grid.lockLayout} gap-2 ${currentSpacing.fieldGap}`}>
+          <div>
+            <label className={`${commonStyles.labelClass} md:text-base`}>Width</label>
+            <input
+              ref={widthRef}
+              type="text"
+              name="width"
+              value={width}
+              onChange={handleWidthChange}
+              onBlur={(e) => {
+                setFocusedField(null);
+                handleWidthBlur(e);
+              }}
+              onFocus={(e) => {
+                setFocusedField('width');
+                if (calculationMode === 'height') {
+                  e.target.select();
+                }
+              }}
+              onKeyPress={handleWidthKeyPress}
+              onWheel={handleWidthWheel}
+              onClick={(e) => {
+                e.target.select();
+                setFocusedField('width');
+              }}
+              placeholder={getWidthPlaceholder()}
+              className={commonStyles.getInputStyle('width', calculationMode)}
+              disabled={calculationMode === 'width'}
+              onTouchStart={(e) => handleTouchStart(e, 'width')}
+              onTouchMove={(e) => handleTouchMove(e, 'width')}
+            />
+          </div>
+
+          <div className="flex items-end relative">
+            <button
+              type="button"
+              onClick={() => {
+                if (calculationMode === null) {
+                  setIsWidthLocked(true);
+                  setIsHeightLocked(false);
+                  setCalculationMode('width');
+                } else if (calculationMode === 'width') {
+                  setIsWidthLocked(false);
+                  setIsHeightLocked(false);
+                  setCalculationMode('ratio');
+                } else if (calculationMode === 'ratio') {
+                  setIsWidthLocked(false);
+                  setIsHeightLocked(true);
+                  setCalculationMode('height');
+                } else {
+                  setIsWidthLocked(false);
+                  setIsHeightLocked(false);
+                  setCalculationMode(null);
+                }
+              }}
+              className={`${commonStyles.lockButtonStyle(calculationMode)} relative`}
+            >
+              {calculationMode ? (
+                <FaLock className={`${colors.lockIconColor} transform scale-75`} />
+              ) : (
+                <FaUnlockAlt className={colors.unlockIconColor} />
+              )}
+              {calculationMode === 'width' && (
+                <FaAngleLeft className={`absolute -left-1 top-1/2 -translate-y-1/2 ${colors.arrowColor} text-lg`} />
+              )}
+              {calculationMode === 'ratio' && (
+                <FaAngleUp className={`absolute -top-1 left-1/2 -translate-x-1/2 ${colors.arrowColor} text-lg`} />
+              )}
+              {calculationMode === 'height' && (
+                <FaAngleRight className={`absolute -right-1 top-1/2 -translate-y-1/2 ${colors.arrowColor} text-lg`} />
+              )}
+            </button>
+          </div>
+
+          <div>
+            <label className={`${commonStyles.labelClass} md:text-base`}>Height</label>
+            <input
+              ref={heightRef}
+              type="text"
+              name="height"
+              value={height}
+              onChange={handleHeightChange}
+              onBlur={(e) => {
+                setFocusedField(null);
+                handleHeightBlur(e);
+              }}
+              onFocus={(e) => {
+                setFocusedField('height');
+                if (calculationMode === 'width') {
+                  e.target.select();
+                }
+              }}
+              onKeyPress={handleHeightKeyPress}
+              onWheel={handleHeightWheel}
+              onClick={(e) => {
+                e.target.select();
+                setFocusedField('height');
+              }}
+              placeholder={getHeightPlaceholder()}
+              className={commonStyles.getInputStyle('height', calculationMode)}
+              disabled={calculationMode === 'height'}
+              onTouchStart={(e) => handleTouchStart(e, 'height')}
+              onTouchMove={(e) => handleTouchMove(e, 'height')}
+            />
+          </div>
+        </div>
+
+        <CalculatorButtons 
+          onLog={handleLog}
+          onCopy={handleCopy}
+          onShare={handleShare}
+          onReset={handleReset}
+          copyText={`Aspect Ratio: ${selectedRatio} = ${width}x${height}`}
+          logButtonIcon={logButtonText}
+          copyButtonIcon={copyButtonText}
+          shareButtonIcon={shareButtonText}
+          resetButtonIcon={resetButtonText}
+        />
+      </div>
+    );
+  }
+
+  export default AspectRatioCalculator;

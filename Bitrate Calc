@@ -1,0 +1,1090 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { SlDocs, SlNote, SlRefresh, SlLike, SlPaperPlane } from "react-icons/sl";
+import { FaShareSquare, FaLock, FaUnlockAlt, FaAngleLeft, FaAngleRight, FaAngleUp } from 'react-icons/fa';
+import { useCalculator } from '../context/CalculatorContext';
+import { colors, spacing, commonStyles, layout } from '../styles/globalStyles';
+import CalculatorButtons from './CalculatorButtons';
+import { handleShareOnDevice } from '../utils/shareUtils';
+
+// Timecode class for handling timecode operations
+class Timecode {
+  constructor(hours = 0, minutes = 0, seconds = 0, frames = 0, frameRate = 24) {
+    this.hours = Math.floor(hours);
+    this.minutes = Math.floor(minutes);
+    this.seconds = Math.floor(seconds);
+    this.frames = Math.floor(frames);
+    this.frameRate = frameRate;
+  }
+
+  // Parse a timecode string into a Timecode object
+  static parse(timecodeString, frameRate = 24) {
+    const parts = timecodeString.split(/[:.]/).map(Number);
+    while (parts.length < 4) parts.unshift(0);
+    const [hours, minutes, seconds, frames] = parts;
+    return new Timecode(hours, minutes, seconds, frames, frameRate);
+  }
+  
+  // Convert Timecode object to string
+  toString() {
+    return `${this.hours.toString().padStart(2, '0')}:${this.minutes.toString().padStart(2, '0')}:${this.seconds.toString().padStart(2, '0')}:${this.frames.toString().padStart(2, '0')}`;
+  }
+
+  // Calculate total frames
+  totalFrames() {
+    return this.hours * 3600 * this.frameRate + 
+           this.minutes * 60 * this.frameRate + 
+           this.seconds * this.frameRate + 
+           this.frames;
+  }
+
+  // Create a Timecode object from total frames
+  static fromFrames(totalFrames, frameRate = 24) {
+    const hours = Math.floor(totalFrames / (3600 * frameRate));
+    totalFrames %= 3600 * frameRate;
+    const minutes = Math.floor(totalFrames / (60 * frameRate));
+    totalFrames %= 60 * frameRate;
+    const seconds = Math.floor(totalFrames / frameRate);
+    const frames = Math.floor(totalFrames % frameRate);
+
+    return new Timecode(hours, minutes, seconds, frames, frameRate);
+  }
+}
+// Add this helper function near the top of the file
+const formatBitrate = (bitrateInBytes) => {
+  if (bitrateInBytes >= 1024 * 1024 * 1024) {
+    return `${(bitrateInBytes / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+  } else if (bitrateInBytes >= 1024 * 1024) {
+    return `${(bitrateInBytes / (1024 * 1024)).toFixed(2)} MB/s`;
+  } else if (bitrateInBytes >= 1024) {
+    return `${(bitrateInBytes / 1024).toFixed(2)} KB/s`;
+  } else {
+    return `${bitrateInBytes.toFixed(2)} B/s`;
+  }
+};
+
+const BitrateCalculator = ({ addLog }) => {
+  const { bitrateCalcState, setBitrateCalcState } = useCalculator();
+
+  // Initialize state from context or defaults
+  const [calcData, setCalcData] = useState(bitrateCalcState.calcData || {
+    duration: "01:00:00:00",
+    bitrate: "100 MB/s",
+    framerate: "24",
+    fileSize: "43.902"
+  });
+  
+  const [durationInput, setDurationInput] = useState(bitrateCalcState.durationInput || "01:00:00:00");
+  const [fileSizeInput, setFileSizeInput] = useState(bitrateCalcState.fileSizeInput || "43.902 GB");
+  const [fileSizeUnit, setFileSizeUnit] = useState(bitrateCalcState.fileSizeUnit || "GB");
+  const [isDurationLocked, setIsDurationLocked] = useState(bitrateCalcState.isDurationLocked || false);
+  const [isFileSizeLocked, setIsFileSizeLocked] = useState(bitrateCalcState.isFileSizeLocked || false);
+  const [calculationMode, setCalculationMode] = useState(bitrateCalcState.calculationMode || null);
+  const [bitrateInput, setBitrateInput] = useState('100.0 MB/s');
+  const [isBitrateLocked, setIsBitrateLocked] = useState(false);
+  const [lockedField, setLockedField] = useState(null);
+  const [copyDurationText, setCopyDuration] = useState(<SlDocs />);
+  const [logButtonText, setLogButtonText] = useState(<SlNote />);
+  const [shareButtonText, setShareButtonText] = useState(<SlPaperPlane />);
+  const [resetButtonText, setResetButtonText] = useState(<SlRefresh />);
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Add these refs near the top of the component with other declarations
+  const durationRef = useRef(null);
+  const fileSizeRef = useRef(null);
+  const logRef = useRef(null);
+
+  // Add this useEffect to detect mobile devices
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent));
+    };
+
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  const currentSpacing = isMobile ? spacing.mobile : spacing.desktop;
+
+  // Remove local style definitions and use global ones
+  const commonInputClass = commonStyles.commonInputClass;
+  const textCenterImportant = commonStyles.textCenterImportant;
+  const getInputStyle = (field) => commonStyles.getInputStyle(field, calculationMode);
+
+  // Merge both handleFileSizeWheel implementations into one
+  const handleFileSizeWheel = (e) => {
+    e.preventDefault();
+    if (lockedField === 'fileSize') return;
+
+    const delta = Math.sign(-e.deltaY);
+    const changeFactor = 1.1;
+
+    let parsed = parseFileSize(fileSizeInput);
+    if (!parsed) return;
+    
+    let { size, unit } = parsed;
+    let newSize = size;
+
+    if (delta > 0) {
+      newSize *= changeFactor;
+    } else {
+      newSize /= changeFactor;
+    }
+
+    const unitsOrder = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let currentIndex = unitsOrder.indexOf(unit);
+
+    while (newSize >= 1000 && currentIndex < unitsOrder.length - 1) {
+      newSize /= 1000;
+      currentIndex++;
+      unit = unitsOrder[currentIndex];
+    }
+
+    while (newSize < 1 && currentIndex > 0) {
+      newSize *= 1000;
+      currentIndex--;
+      unit = unitsOrder[currentIndex];
+    }
+
+    newSize = unit === 'KB' ? Math.round(newSize) : parseFloat(newSize.toFixed(3));
+    const newFileSizeInput = `${newSize} ${unit}`;
+    setFileSizeInput(newFileSizeInput);
+    
+    if (!lockedField) {
+      // If nothing is locked, update bitrate based on duration and new file size
+      const newBitrate = calculateBitrate(durationInput, newFileSizeInput);
+      if (newBitrate) {
+        setBitrateInput(newBitrate);
+      }
+    } else if (lockedField === 'duration') {
+      // If duration is locked, update bitrate
+      const newBitrate = calculateBitrate(durationInput, newFileSizeInput);
+      if (newBitrate) {
+        setBitrateInput(newBitrate);
+      }
+    } else if (lockedField === 'bitrate') {
+      // If bitrate is locked, update duration
+      const newDuration = calculateDuration(bitrateInput, newFileSizeInput);
+      if (newDuration) {
+        setDurationInput(newDuration);
+      }
+    }
+  };
+
+  // Add the calculation helper functions
+  const calculateBitrate = (duration, fileSize) => {
+    const parsedSize = parseFileSize(fileSize);
+    if (!parsedSize) return null;
+
+    const [hours, minutes, seconds, frames] = duration.split(':').map(Number);
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds + frames/24;
+    
+    // Convert file size to bytes
+    const multiplier = {
+      'B': 1,
+      'KB': 1024,
+      'MB': 1024 * 1024,
+      'GB': 1024 * 1024 * 1024,
+      'TB': 1024 * 1024 * 1024 * 1024,
+      'PB': 1024 * 1024 * 1024 * 1024 * 1024
+    };
+
+    const bytes = parsedSize.size * multiplier[parsedSize.unit];
+    const bytesPerSecond = bytes / totalSeconds;
+
+    // Convert to appropriate unit
+    if (bytesPerSecond >= 1024 * 1024 * 1024) {
+      return `${(bytesPerSecond / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+    } else if (bytesPerSecond >= 1024 * 1024) {
+      return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)} MB/s`;
+    } else {
+      return `${(bytesPerSecond / 1024).toFixed(2)} KB/s`;
+    }
+  };
+
+  const calculateDuration = (bitrate, fileSize) => {
+    const parsedBitrate = parseBitrate(bitrate);
+    const parsedSize = parseFileSize(fileSize);
+    if (!parsedBitrate || !parsedSize) return null;
+
+    // Convert everything to bytes
+    const multiplier = {
+      'B/s': 1,
+      'KB/s': 1024,
+      'MB/s': 1024 * 1024,
+      'GB/s': 1024 * 1024 * 1024
+    };
+
+    const bytesPerSecond = parsedBitrate.rate * multiplier[parsedBitrate.unit];
+    const totalBytes = parsedSize.size * multiplier[parsedSize.unit.replace('/s', '')];
+
+    const totalSeconds = totalBytes / bytesPerSecond;
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    const frames = Math.round((totalSeconds % 1) * 24);
+
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}:${frames.toString().padStart(2, '0')}`;
+  };
+
+  // Add these handler functions before the return statement
+  const handleDurationFocus = () => {
+    if (!lockedField) {
+      setDurationInput('');
+    }
+  };
+
+  const handleDurationBlur = () => {
+    if (durationInput.trim() === '') {
+      setDurationInput('');
+      return;
+    }
+
+    try {
+      const parsedDuration = parseDuration(durationInput, 24);
+      setDurationInput(parsedDuration);
+      
+      if (!lockedField) {
+        // If nothing is locked, update file size based on duration and bitrate
+        const newFileSize = calculateFileSize(parsedDuration, bitrateInput);
+        if (newFileSize) {
+          setFileSizeInput(newFileSize);
+        }
+      } else if (lockedField === 'fileSize') {
+        // If file size is locked, update bitrate
+        const newBitrate = calculateBitrate(parsedDuration, fileSizeInput);
+        if (newBitrate) {
+          setBitrateInput(newBitrate);
+        }
+      }
+    } catch (error) {
+      console.error("Invalid duration format");
+      setDurationInput('');
+    }
+  };
+
+  const handleDurationKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.target.blur();
+    }
+  };
+
+  const handleDurationWheel = (e) => {
+    e.preventDefault();
+    if (lockedField === 'duration') return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const width = rect.width;
+    
+    const [hours, minutes, seconds, frames] = durationInput.split(':').map(Number);
+    const delta = Math.sign(-e.deltaY);
+    
+    let newHours = hours;
+    let newMinutes = minutes;
+    let newSeconds = seconds;
+    let newFrames = frames;
+    
+    if (x < width * 0.25) {
+      // Hours
+      newHours = Math.max(0, hours + delta);
+    } else if (x < width * 0.5) {
+      // Minutes
+      newMinutes += delta;
+      if (newMinutes < 0) {
+        if (newHours > 0) {
+          newHours--;
+          newMinutes = 59;
+        } else {
+          newMinutes = 0;
+        }
+      } else if (newMinutes >= 60) {
+        newHours++;
+        newMinutes = 0;
+      }
+    } else if (x < width * 0.75) {
+      // Seconds
+      newSeconds += delta;
+      if (newSeconds < 0) {
+        if (newMinutes > 0) {
+          newMinutes--;
+          newSeconds = 59;
+        } else if (newHours > 0) {
+          newHours--;
+          newMinutes = 59;
+          newSeconds = 59;
+        } else {
+          newSeconds = 0;
+        }
+      } else if (newSeconds >= 60) {
+        newMinutes++;
+        newSeconds = 0;
+        if (newMinutes >= 60) {
+          newHours++;
+          newMinutes = 0;
+        }
+      }
+    } else {
+      // Frames
+      newFrames += delta;
+      if (newFrames < 0) {
+        if (newSeconds > 0) {
+          newSeconds--;
+          newFrames = 23;
+        } else if (newMinutes > 0) {
+          newMinutes--;
+          newSeconds = 59;
+          newFrames = 23;
+        } else if (newHours > 0) {
+          newHours--;
+          newMinutes = 59;
+          newSeconds = 59;
+          newFrames = 23;
+        } else {
+          newFrames = 0;
+        }
+      } else if (newFrames >= 24) {
+        newSeconds++;
+        newFrames = 0;
+        if (newSeconds >= 60) {
+          newMinutes++;
+          newSeconds = 0;
+          if (newMinutes >= 60) {
+            newHours++;
+            newMinutes = 0;
+          }
+        }
+      }
+    }
+
+    const newDuration = `${newHours.toString().padStart(2, '0')}:${newMinutes.toString().padStart(2, '0')}:${newSeconds.toString().padStart(2, '0')}:${newFrames.toString().padStart(2, '0')}`;
+    setDurationInput(newDuration);
+
+    if (!lockedField) {
+      // If nothing is locked, update file size
+      const newFileSize = calculateFileSize(newDuration, bitrateInput);
+      if (newFileSize) {
+        setFileSizeInput(newFileSize);
+      }
+    } else if (lockedField === 'fileSize') {
+      // If file size is locked, update bitrate
+      const newBitrate = calculateBitrate(newDuration, fileSizeInput);
+      if (newBitrate) {
+        setBitrateInput(newBitrate);
+      }
+    }
+  };
+
+  const handleInputChange = (e, field) => {
+    const { value } = e.target;
+    
+    switch (field) {
+      case 'duration':
+        if (!lockedField || lockedField !== 'duration') {
+          setDurationInput(value);
+          if (!lockedField) {
+            // If nothing is locked, update file size
+            const newFileSize = calculateFileSize(value, bitrateInput);
+            if (newFileSize) {
+              setFileSizeInput(newFileSize);
+            }
+          } else if (lockedField === 'bitrate') {
+            // If bitrate is locked, update file size
+            const newFileSize = calculateFileSize(value, bitrateInput);
+            if (newFileSize) {
+              setFileSizeInput(newFileSize);
+            }
+          } else if (lockedField === 'fileSize') {
+            // If file size is locked, update bitrate
+            const newBitrate = calculateBitrate(value, fileSizeInput);
+            if (newBitrate) {
+              setBitrateInput(newBitrate);
+            }
+          }
+        }
+        break;
+
+      case 'bitrate':
+        if (!lockedField || lockedField !== 'bitrate') {
+          setBitrateInput(value);
+          if (!lockedField) {
+            // If nothing is locked, update file size
+            const newFileSize = calculateFileSize(durationInput, value);
+            if (newFileSize) {
+              setFileSizeInput(newFileSize);
+            }
+          } else if (lockedField === 'duration') {
+            // If duration is locked, update file size
+            const newFileSize = calculateFileSize(durationInput, value);
+            if (newFileSize) {
+              setFileSizeInput(newFileSize);
+            }
+          } else if (lockedField === 'fileSize') {
+            // If file size is locked, update duration
+            const newDuration = calculateDuration(value, fileSizeInput);
+            if (newDuration) {
+              setDurationInput(newDuration);
+            }
+          }
+        }
+        break;
+
+      case 'fileSize':
+        if (!lockedField || lockedField !== 'fileSize') {
+          setFileSizeInput(value);
+          if (!lockedField) {
+            // If nothing is locked, update bitrate
+            const newBitrate = calculateBitrate(durationInput, value);
+            if (newBitrate) {
+              setBitrateInput(newBitrate);
+            }
+          } else if (lockedField === 'duration') {
+            // If duration is locked, update bitrate
+            const newBitrate = calculateBitrate(durationInput, value);
+            if (newBitrate) {
+              setBitrateInput(newBitrate);
+            }
+          } else if (lockedField === 'bitrate') {
+            // If bitrate is locked, update duration
+            const newDuration = calculateDuration(bitrateInput, value);
+            if (newDuration) {
+              setDurationInput(newDuration);
+            }
+          }
+        }
+        break;
+
+      default:
+        break;
+    }
+  };
+
+  const handleBitrateWheel = (e) => {
+    e.preventDefault();
+    if (lockedField === 'bitrate') return;
+
+    const delta = Math.sign(-e.deltaY);
+    const changeFactor = 1.1;
+
+    let parsed = parseBitrate(bitrateInput);
+    if (!parsed) return;
+    
+    let { rate, unit } = parsed;
+    let newRate = rate;
+
+    if (delta > 0) {
+      newRate *= changeFactor;
+    } else {
+      newRate /= changeFactor;
+    }
+
+    const unitsOrder = ['KB/s', 'MB/s', 'GB/s'];
+    let currentIndex = unitsOrder.indexOf(unit);
+
+    while (newRate >= 1000 && currentIndex < unitsOrder.length - 1) {
+      newRate /= 1000;
+      currentIndex++;
+      unit = unitsOrder[currentIndex];
+    }
+
+    while (newRate < 1 && currentIndex > 0) {
+      newRate *= 1000;
+      currentIndex--;
+      unit = unitsOrder[currentIndex];
+    }
+
+    newRate = unit === 'KB/s' ? Math.round(newRate) : parseFloat(newRate.toFixed(2));
+    const newBitrate = `${newRate} ${unit}`;
+    setBitrateInput(newBitrate);
+    
+    if (!lockedField) {
+      // If nothing is locked, update file size
+      const newFileSize = calculateFileSize(durationInput, newBitrate);
+      if (newFileSize) {
+        setFileSizeInput(newFileSize);
+      }
+    } else if (lockedField === 'fileSize') {
+      // If file size is locked, update duration
+      const newDuration = calculateDuration(newBitrate, fileSizeInput);
+      if (newDuration) {
+        setDurationInput(newDuration);
+      }
+    }
+  };
+
+  const parseBitrate = (input) => {
+    const cleanInput = input.replace(/\s+/g, '').toLowerCase();
+    const match = cleanInput.match(/^([\d.]+)(g|gb|m|mb|k|kb|b)(\/s)?$/i);
+    
+    if (match) {
+      const rate = parseFloat(match[1]);
+      let unit = match[2].toLowerCase();
+      switch (unit) {
+        case 'g': unit = 'gb'; break;
+        case 'm': unit = 'mb'; break;
+        case 'k': unit = 'kb'; break;
+      }
+      return { rate, unit: `${unit.toUpperCase()}/s` };
+    }
+    return null;
+  };
+
+  const parseFileSize = (input) => {
+    // Remove any whitespace and convert to lowercase
+    const cleanInput = input.replace(/\s+/g, '').toLowerCase();
+  
+    // Define unit patterns
+    const unitPatterns = {
+      'pb': ['p', 'ps', 'pb', 'pbs', 'pe', 'pet', 'pets', 'peta', 'petas', 'petabyte', 'petabytes'],
+      'tb': ['t', 'ts', 'tb', 'tbs', 'te', 'ter', 'ters', 'tera', 'teras', 'terabyte', 'terabytes'],
+      'gb': ['g', 'gs', 'gb', 'gbs', 'gi', 'gig', 'gigs', 'giga', 'gigas', 'gigabyte', 'gigabytes'],
+      'mb': ['m', 'ms', 'mb', 'mbs', 'me', 'meg', 'megs', 'mega', 'megas', 'megabyte', 'megabytes'],
+      'kb': ['k', 'ks', 'kb', 'kbs', 'ki', 'kil', 'kils', 'kilo', 'kilos', 'kilobyte', 'kilobytes'],
+      'b': ['b', 'bs', 'bi', 'by', 'byte', 'bytes']
+    };
+  
+    // Create a regex pattern that matches any of the unit patterns
+    const unitRegexPattern = Object.values(unitPatterns).flat().join('|');
+    
+    // Match the input against the pattern
+    const match = cleanInput.match(new RegExp(`^(\\d+(?:\\.\\d+)?)(${unitRegexPattern})$`));
+  
+    if (match) {
+      const size = parseFloat(match[1]);
+      const unitLower = match[2];
+  
+      // Determine the standardized unit
+      for (const [standardUnit, patterns] of Object.entries(unitPatterns)) {
+        if (patterns.includes(unitLower)) {
+          return { size, unit: standardUnit.toUpperCase() };
+        }
+      }
+    }
+  
+    return null;
+  };
+
+  const handleTouchStart = (e, field) => {
+    if (lockedField === field) return;
+    
+    e.preventDefault();
+    const touch = e.touches[0];
+    const startY = touch.clientY;
+    
+    const handleTouchMove = (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      const currentY = touch.clientY;
+      const diffY = startY - currentY;
+      const sensitivity = 0.5;
+      
+      if (Math.abs(diffY) > 5) {
+        const delta = Math.sign(diffY) * sensitivity;
+        
+        switch (field) {
+          case 'duration':
+            handleDurationWheel({ ...e, deltaY: -delta });
+            break;
+          case 'bitrate':
+            handleBitrateWheel({ ...e, deltaY: -delta });
+            break;
+          case 'fileSize':
+            handleFileSizeWheel({ ...e, deltaY: -delta });
+            break;
+          default:
+            break;
+        }
+      }
+    };
+    
+    const handleTouchEnd = () => {
+      document.removeEventListener('touchmove', handleTouchMove);
+      document.removeEventListener('touchend', handleTouchEnd);
+    };
+    
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd);
+  };
+
+  const handleShare = async () => {
+    // Create URL with all parameters
+    const shareUrl = new URL(window.location.href);
+    shareUrl.searchParams.set('duration', durationInput);
+    shareUrl.searchParams.set('bitrate', bitrateInput);
+    shareUrl.searchParams.set('fileSize', fileSizeInput);
+    
+    // If we have a calculation mode, include it
+    if (calculationMode) {
+      shareUrl.searchParams.set('mode', calculationMode);
+    }
+
+    const shareButtonText = `${durationInput} @ ${bitrateInput} = ${fileSizeInput}`;
+    
+    try {
+      const result = await handleShareOnDevice(
+        'TBD Post DataCalc',
+        `Check out this calculation: ${shareButtonText}`,
+        shareUrl.toString()
+      );
+
+      if (result?.success) {
+        setShareButtonText(<SlLike />);
+        setTimeout(() => setShareButtonText(<SlPaperPlane />), 500);
+      }
+      return result;
+    } catch (error) {
+      console.error('Share failed:', error);
+      return { success: false, method: 'none' };
+    }
+  };
+
+  const handleCopyDuration = (text, result) => {
+    if (result) {
+      setCopyDuration(<SlLike />);
+      setTimeout(() => setCopyDuration(<SlDocs />), 500);
+    }
+  };
+
+  const handleLogClick = () => {
+    if (addLog) {
+      addLog(`${durationInput} @ ${bitrateInput} = ${fileSizeInput}`);
+    }
+    setLogButtonText(<SlLike />);
+    setTimeout(() => setLogButtonText(<SlNote />), 500);
+  };
+
+  const handleReset = () => {
+    setDurationInput("01:00:00:00");
+    setBitrateInput("100.0 MB/s");
+    setFileSizeInput("43.902 GB");
+    setLockedField(null);
+    setResetButtonText(<SlLike />);
+    setTimeout(() => setResetButtonText(<SlRefresh />), 500);
+  };
+
+  const handleFileSizeFocus = () => {
+    if (!lockedField) {
+      setFileSizeInput('');
+    }
+  };
+
+  const handleFileSizeBlur = () => {
+    if (fileSizeInput.trim() === '') {
+      setFileSizeInput('');
+      return;
+    }
+
+    const parsed = parseFileSize(fileSizeInput);
+    if (parsed) {
+      const formattedSize = `${parsed.size} ${parsed.unit}`;
+      setFileSizeInput(formattedSize);
+      
+      if (!lockedField) {
+        // If nothing is locked, update bitrate based on duration
+        const newBitrate = calculateBitrate(durationInput, formattedSize);
+        if (newBitrate) {
+          setBitrateInput(newBitrate);
+        }
+      } else if (lockedField === 'duration') {
+        // If duration is locked, update bitrate
+        const newBitrate = calculateBitrate(durationInput, formattedSize);
+        if (newBitrate) {
+          setBitrateInput(newBitrate);
+        }
+      } else if (lockedField === 'bitrate') {
+        // If bitrate is locked, update duration
+        const newDuration = calculateDuration(bitrateInput, formattedSize);
+        if (newDuration) {
+          setDurationInput(newDuration);
+        }
+      }
+    }
+  };
+
+  const handleFileSizeKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.target.blur();
+    }
+  };
+
+  // Add this function near the other calculation functions
+  const calculateFileSize = (duration, bitrate) => {
+    const parsedBitrate = parseBitrate(bitrate);
+    if (!parsedBitrate) return null;
+
+    const [hours, minutes, seconds, frames] = duration.split(':').map(Number);
+    const totalSeconds = hours * 3600 + minutes * 60 + seconds + frames/24;
+    
+    // Convert bitrate to bytes per second
+    const multiplier = {
+      'B/s': 1,
+      'KB/s': 1024,
+      'MB/s': 1024 * 1024,
+      'GB/s': 1024 * 1024 * 1024
+    };
+
+    const bytesPerSecond = parsedBitrate.rate * multiplier[parsedBitrate.unit];
+    const totalBytes = bytesPerSecond * totalSeconds;
+
+    // Convert to appropriate unit
+    if (totalBytes >= 1024 * 1024 * 1024 * 1024) {
+      return `${(totalBytes / (1024 * 1024 * 1024 * 1024)).toFixed(3)} TB`;
+    } else if (totalBytes >= 1024 * 1024 * 1024) {
+      return `${(totalBytes / (1024 * 1024 * 1024)).toFixed(3)} GB`;
+    } else if (totalBytes >= 1024 * 1024) {
+      return `${(totalBytes / (1024 * 1024)).toFixed(3)} MB`;
+    } else {
+      return `${(totalBytes / 1024).toFixed(3)} KB`;
+    }
+  };
+
+  // Function to parse duration input
+  const parseDuration = (input, framerate) => {
+    if (!input || input.trim() === '') {
+      return new Timecode(0, 0, 0, 0, framerate).toString();
+    }
+
+    input = input.trim().toLowerCase();
+
+    // Helper function to handle rollovers
+    const handleRollover = (hours, minutes, seconds, frames) => {
+      // Handle frame rollover
+      if (frames >= framerate) {
+        seconds += Math.floor(frames / framerate);
+        frames %= framerate;
+      }
+      // Handle seconds rollover
+      if (seconds >= 60) {
+        minutes += Math.floor(seconds / 60);
+        seconds %= 60;
+      }
+      // Handle minutes rollover
+      if (minutes >= 60) {
+        hours += Math.floor(minutes / 60);
+        minutes %= 60;
+      }
+      return [hours, minutes, seconds, frames];
+    };
+
+    // Handle special period patterns first
+    if (input.includes('.')) {
+      const parts = input.split('.');
+      switch (parts.length) {
+        case 2: // 1.12 -> 00:01:00:12
+          let [minutes, frames1] = [parseInt(parts[0]) || 0, parseInt(parts[1]) || 0];
+          return new Timecode(...handleRollover(0, minutes, 0, frames1), framerate).toString();
+        case 3: // 1..12 -> 01:00:00:12 or 11..1 -> 11:00:00:01
+          let [hours, , frames2] = [parseInt(parts[0]) || 0, 0, parseInt(parts[2]) || 0];
+          return new Timecode(...handleRollover(hours, 0, 0, frames2), framerate).toString();
+        default:
+          // For any other number of periods, treat each as 00
+          return new Timecode(...Array(input.match(/\./g).length).fill(0), framerate).toString();
+      }
+    }
+
+    // Handle colon patterns (e.g., 1:12 -> 00:00:01:12)
+    if (input.includes(':')) {
+      const parts = input.split(':').map(num => parseInt(num) || 0);
+      while (parts.length < 4) parts.unshift(0);
+      return new Timecode(...handleRollover(...parts), framerate).toString();
+    }
+
+    // Handle continuous digit input with patterns
+    if (/^\d+$/.test(input)) {
+      let parts = [];
+      
+      switch (input.length) {
+        case 8: // HH:MM:SS:FF
+          parts = [
+            parseInt(input.slice(0, 2)) || 0,
+            parseInt(input.slice(2, 4)) || 0,
+            parseInt(input.slice(4, 6)) || 0,
+            parseInt(input.slice(6, 8)) || 0
+          ];
+          break;
+        case 7: // 0H:MM:SS:FF
+          parts = [
+            parseInt('0' + input.slice(0, 1)) || 0,
+            parseInt(input.slice(1, 3)) || 0,
+            parseInt(input.slice(3, 5)) || 0,
+            parseInt(input.slice(5, 7)) || 0
+          ];
+          break;
+        case 6: // HH:MM:SS:00
+          parts = [
+            parseInt(input.slice(0, 2)) || 0,
+            parseInt(input.slice(2, 4)) || 0,
+            parseInt(input.slice(4, 6)) || 0,
+            0
+          ];
+          break;
+        case 5: // 0H:MM:SS:00
+          parts = [
+            parseInt('0' + input.slice(0, 1)) || 0,
+            parseInt(input.slice(1, 3)) || 0,
+            parseInt(input.slice(3, 5)) || 0,
+            0
+          ];
+          break;
+        case 4: // 00:MM:SS:00
+          parts = [
+            0,
+            parseInt(input.slice(0, 2)) || 0,
+            parseInt(input.slice(2, 4)) || 0,
+            0
+          ];
+          break;
+        case 3: // 00:0M:SS:00
+          parts = [
+            0,
+            parseInt('0' + input.slice(0, 1)) || 0,
+            parseInt(input.slice(1, 3)) || 0,
+            0
+          ];
+          break;
+        case 2: // 00:00:SS:00
+          parts = [0, 0, parseInt(input.slice(0, 2)) || 0, 0];
+          break;
+        case 1: // 00:00:0S:00
+          parts = [0, 0, parseInt('0' + input) || 0, 0];
+          break;
+        default:
+          // For any other length, treat as seconds
+          const seconds = parseInt(input, 10);
+          return new Timecode(...handleRollover(0, 0, seconds, 0), framerate).toString();
+      }
+
+      return new Timecode(...handleRollover(...parts), framerate).toString();
+    }
+
+    // Handle text-based duration inputs (e.g., "1h 30m")
+    const patterns = {
+      week: /(\d+)\s*(?:w|wk|wks|week|weeks)/i,
+      day: /(\d+)\s*(?:d|dy|dys|day|days)/i,
+      hour: /(\d+)\s*(?:h|hr|hrs|hour|hours)/i,
+      minute: /(\d+)\s*(?:m|min|mins|minute|minutes)/i,
+      second: /(\d+)\s*(?:s|sec|secs|second|seconds)/i,
+      frame: /(\d+)\s*(?:f|fr|frm|frms|frame|frames)/i
+    };
+
+    let totalFrames = 0;
+
+    Object.entries(patterns).forEach(([unit, pattern]) => {
+      const match = input.match(pattern);
+      if (match) {
+        const value = parseInt(match[1]);
+        switch (unit) {
+          case 'week': totalFrames += value * 7 * 24 * 3600 * framerate; break;
+          case 'day': totalFrames += value * 24 * 3600 * framerate; break;
+          case 'hour': totalFrames += value * 3600 * framerate; break;
+          case 'minute': totalFrames += value * 60 * framerate; break;
+          case 'second': totalFrames += value * framerate; break;
+          case 'frame': totalFrames += value; break;
+        }
+      }
+    });
+
+    if (totalFrames === 0) {
+      // If no valid time units were found, try parsing as a single number (assume seconds)
+      const totalSeconds = parseFloat(input);
+      if (!isNaN(totalSeconds)) {
+        totalFrames = Math.round(totalSeconds * framerate);
+      } else {
+        throw new Error("Invalid duration format");
+      }
+    }
+
+    return Timecode.fromFrames(totalFrames, framerate).toString();
+  };
+
+  
+  // Add these handlers near the other input handlers
+  const handleBitrateFocus = () => {
+    if (!lockedField) {
+      setBitrateInput('');
+    }
+  };
+
+  const handleBitrateBlur = () => {
+    if (bitrateInput.trim() === '') {
+      setBitrateInput('');
+      return;
+    }
+
+    const parsed = parseBitrate(bitrateInput);
+    if (parsed) {
+      const formattedBitrate = `${parsed.rate} ${parsed.unit}`;
+      setBitrateInput(formattedBitrate);
+      
+      if (!lockedField) {
+        // If nothing is locked, update file size based on duration
+        const newFileSize = calculateFileSize(durationInput, formattedBitrate);
+        if (newFileSize) {
+          setFileSizeInput(newFileSize);
+        }
+      } else if (lockedField === 'duration') {
+        // If duration is locked, update file size
+        const newFileSize = calculateFileSize(durationInput, formattedBitrate);
+        if (newFileSize) {
+          setFileSizeInput(newFileSize);
+        }
+      } else if (lockedField === 'fileSize') {
+        // If file size is locked, update duration
+        const newDuration = calculateDuration(formattedBitrate, fileSizeInput);
+        if (newDuration) {
+          setDurationInput(newDuration);
+        }
+      }
+    }
+  };
+
+  const handleBitrateKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.target.blur();
+    }
+  };
+
+  // Add this useEffect to handle URL parameters on load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    
+    // Load parameters if they exist
+    if (params.has('duration')) {
+      setDurationInput(params.get('duration'));
+    }
+    if (params.has('bitrate')) {
+      setBitrateInput(params.get('bitrate'));
+    }
+    if (params.has('fileSize')) {
+      setFileSizeInput(params.get('fileSize'));
+    }
+    if (params.has('mode')) {
+      setCalculationMode(params.get('mode'));
+    }
+  }, []);
+
+  return (
+    <div className={`bitrate-calculator ${currentSpacing.padding} ${colors.bgColor} ${colors.textColor}`}>
+      {/* Duration row */}
+      <div className={currentSpacing.fieldGap}>
+        <label className={`${commonStyles.labelClass} md:text-base`}>Duration (HH:MM:SS:FF)</label>
+        <input
+          ref={durationRef}
+          type="text"
+          value={durationInput}
+          onChange={(e) => handleInputChange(e, 'duration')}
+          onFocus={handleDurationFocus}
+          onBlur={handleDurationBlur}
+          onKeyPress={handleDurationKeyPress}
+          onWheel={handleDurationWheel}
+          onTouchStart={(e) => handleTouchStart(e, 'duration')}
+          placeholder={isDurationLocked ? '' : "ex: 01:00:00:00 or 16 hrs"}
+          className={getInputStyle('duration')}
+          disabled={lockedField === 'duration'}
+        />
+      </div>
+
+      {/* Bitrate, Lock, and File Size row */}
+      <div className={`grid ${layout.grid.lockLayout} gap-2 ${currentSpacing.fieldGap}`}>
+        <div>
+          <label className={commonStyles.labelClass}>Bitrate</label>
+          <input
+            type="text"
+            value={bitrateInput}
+            onChange={(e) => handleInputChange(e, 'bitrate')}
+            onFocus={handleBitrateFocus}
+            onBlur={handleBitrateBlur}
+            onKeyPress={handleBitrateKeyPress}
+            onWheel={handleBitrateWheel}
+            onTouchStart={(e) => handleTouchStart(e, 'bitrate')}
+            placeholder={isBitrateLocked ? '' : "ex: 100 MB/s"}
+            className={getInputStyle('bitrate')}
+            disabled={lockedField === 'bitrate'}
+          />
+        </div>
+
+        <div className="flex items-end relative">
+          <button
+            type="button"
+            onClick={() => {
+              if (calculationMode === null) {
+                setIsBitrateLocked(true);
+                setIsDurationLocked(false);
+                setIsFileSizeLocked(false);
+                setCalculationMode('bitrate');
+              } else if (calculationMode === 'bitrate') {
+                setIsBitrateLocked(false);
+                setIsDurationLocked(true);
+                setIsFileSizeLocked(false);
+                setCalculationMode('duration');
+              } else if (calculationMode === 'duration') {
+                setIsBitrateLocked(false);
+                setIsDurationLocked(false);
+                setIsFileSizeLocked(true);
+                setCalculationMode('fileSize');
+              } else {
+                setIsBitrateLocked(false);
+                setIsDurationLocked(false);
+                setIsFileSizeLocked(false);
+                setCalculationMode(null);
+              }
+            }}
+            className={`${commonStyles.lockButtonStyle(calculationMode)} relative`}
+          >
+            {calculationMode ? (
+              <FaLock className={`${colors.lockIconColor} transform scale-75`} />
+            ) : (
+              <FaUnlockAlt className={colors.unlockIconColor} />
+            )}
+            {calculationMode === 'bitrate' && (
+              <FaAngleLeft className={`absolute -left-1 top-1/2 -translate-y-1/2 ${colors.arrowColor} text-lg`} />
+            )}
+            {calculationMode === 'duration' && (
+              <FaAngleUp className={`absolute -top-1 left-1/2 -translate-x-1/2 ${colors.arrowColor} text-lg`} />
+            )}
+            {calculationMode === 'fileSize' && (
+              <FaAngleRight className={`absolute -right-1 top-1/2 -translate-y-1/2 ${colors.arrowColor} text-lg`} />
+            )}
+          </button>
+        </div>
+
+        <div>
+          <label className={commonStyles.labelClass}>File Size</label>
+          <input
+            ref={fileSizeRef}
+            type="text"
+            value={fileSizeInput}
+            onChange={(e) => handleInputChange(e, 'fileSize')}
+            onFocus={handleFileSizeFocus}
+            onBlur={handleFileSizeBlur}
+            onKeyPress={handleFileSizeKeyPress}
+            onWheel={handleFileSizeWheel}
+            onTouchStart={(e) => handleTouchStart(e, 'fileSize')}
+            placeholder={isFileSizeLocked ? '' : "ex: 512 GB"}
+            className={getInputStyle('fileSize')}
+            disabled={lockedField === 'fileSize'}
+          />
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <CalculatorButtons 
+        onLog={handleLogClick}
+        onCopy={handleCopyDuration}
+        onShare={handleShare}
+        onReset={handleReset}
+        copyText={`${durationInput} @ ${bitrateInput} = ${fileSizeInput}`}
+        logButtonIcon={logButtonText}
+        copyButtonIcon={copyDurationText}
+        shareButtonIcon={shareButtonText}
+        resetButtonIcon={resetButtonText}
+      />
+    </div>
+  );
+};
+
+export default BitrateCalculator;
